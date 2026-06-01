@@ -1,0 +1,259 @@
+local player = game.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local runService = game:GetService("RunService")
+local userInput = game:GetService("UserInputService")
+local virtualInputManager = game:GetService("VirtualInputManager")
+
+-- Bypass
+local function secureBypass()
+    local oldKick = player.Kick
+    player.Kick = function() wait(1e9) end
+    player.Destroy = function() end
+    pcall(function()
+        local mt = getrawmetatable(game)
+        local old = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = function(self, ...)
+            local method = getnamecallmethod()
+            if method == "Kick" or method == "Destroy" then return nil end
+            return old(self, ...)
+        end
+        setreadonly(mt, true)
+    end)
+    pcall(function()
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" then
+                if rawget(v, "kick") then v.kick = function() end end
+                if rawget(v, "Destroy") then v.Destroy = function() end end
+            end
+        end
+    end)
+end
+secureBypass()
+
+-- Anti-Parry
+local parryEnabled = true
+local lastParry = 0
+local PARRY_COOLDOWN = 0.07
+local ATTACK_ANIMS = {"Slash", "Stab", "Swing", "Attack", "Punch", "Kick"}
+
+local function isAttacking(char)
+    if not char or not char:FindFirstChild("Humanoid") then return false end
+    local animator = char:FindFirstChild("Animator")
+    if not animator then return false end
+    for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+        local name = track.Animation and track.Animation.Name or ""
+        for _, anim in ipairs(ATTACK_ANIMS) do
+            if name:lower():find(anim:lower()) then return true end
+        end
+    end
+    return false
+end
+
+local function parry()
+    if not parryEnabled then return end
+    local now = tick()
+    if now - lastParry < PARRY_COOLDOWN then return end
+    lastParry = now
+    virtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+    task.wait(0.02)
+    virtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+end
+
+runService.Heartbeat:Connect(function()
+    if not parryEnabled then return end
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local root = char.HumanoidRootPart
+    for _, plr in ipairs(game.Players:GetPlayers()) do
+        if plr ~= player then
+            local target = plr.Character
+            if target and target:FindFirstChild("HumanoidRootPart") then
+                local dist = (target.HumanoidRootPart.Position - root.Position).Magnitude
+                if dist < 20 and isAttacking(target) then
+                    parry()
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- ESP
+local espEnabled = true
+local espData = {}
+
+local function newText()
+    local t = Drawing.new("Text")
+    t.Color = Color3.fromRGB(255,255,255)
+    t.Size = 14
+    t.Center = false
+    t.Outline = true
+    t.OutlineColor = Color3.fromRGB(0,0,0)
+    t.Visible = false
+    return t
+end
+
+local function newBox()
+    local b = Drawing.new("Square")
+    b.Color = Color3.fromRGB(255,0,0)
+    b.Thickness = 1.5
+    b.Filled = false
+    b.Visible = false
+    return b
+end
+
+local function addESP(plr)
+    if espData[plr] then return end
+    espData[plr] = {
+        name = newText(),
+        health = newText(),
+        dist = newText(),
+        box = newBox()
+    }
+end
+
+local function removeESP(plr)
+    local d = espData[plr]
+    if d then
+        d.name:Remove()
+        d.health:Remove()
+        d.dist:Remove()
+        d.box:Remove()
+        espData[plr] = nil
+    end
+end
+
+game.Players.PlayerAdded:Connect(function(plr)
+    if plr ~= player then addESP(plr) end
+    plr.CharacterAdded:Connect(function() addESP(plr) end)
+end)
+game.Players.PlayerRemoving:Connect(removeESP)
+
+for _, plr in ipairs(game.Players:GetPlayers()) do
+    if plr ~= player then addESP(plr) end
+end
+
+runService.RenderStepped:Connect(function()
+    if not espEnabled then
+        for _, d in pairs(espData) do
+            d.name.Visible = false
+            d.health.Visible = false
+            d.dist.Visible = false
+            d.box.Visible = false
+        end
+        return
+    end
+    local myChar = player.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+    local myRoot = myChar.HumanoidRootPart
+    for plr, d in pairs(espData) do
+        local targetChar = plr.Character
+        if not targetChar or not targetChar:FindFirstChild("HumanoidRootPart") then
+            d.name.Visible = false
+            d.health.Visible = false
+            d.dist.Visible = false
+            d.box.Visible = false
+        else
+            local targetRoot = targetChar.HumanoidRootPart
+            local pos, onScreen = camera:WorldToViewportPoint(targetRoot.Position)
+            if onScreen and pos.Z > 0 then
+                local hum = targetChar:FindFirstChild("Humanoid")
+                local health = hum and math.floor(hum.Health) or 0
+                local maxHealth = hum and hum.MaxHealth or 100
+                local healthPercent = health / maxHealth
+                local healthColor = Color3.fromRGB(255 * (1 - healthPercent), 255 * healthPercent, 0)
+                local dist = (targetRoot.Position - myRoot.Position).Magnitude
+                local size = targetChar:GetExtentsSize()
+                local height = size.Y * 2.5
+                local width = size.X * 1.5
+                local topLeft = camera:WorldToViewportPoint(targetRoot.Position + Vector3.new(-width/2, height/2, 0))
+                local bottomRight = camera:WorldToViewportPoint(targetRoot.Position + Vector3.new(width/2, -height/2, 0))
+                d.box.Position = Vector2.new(topLeft.X, topLeft.Y)
+                d.box.Size = Vector2.new(bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y)
+                d.box.Color = healthColor
+                d.box.Visible = true
+                d.name.Text = plr.Name
+                d.name.Position = Vector2.new(topLeft.X, topLeft.Y - 16)
+                d.name.Visible = true
+                d.health.Text = health .. "/" .. maxHealth
+                d.health.Position = Vector2.new(topLeft.X, topLeft.Y - 2)
+                d.health.Color = healthColor
+                d.health.Visible = true
+                d.dist.Text = string.format("%.0fm", dist)
+                d.dist.Position = Vector2.new(bottomRight.X - 30, bottomRight.Y)
+                d.dist.Visible = true
+            else
+                d.name.Visible = false
+                d.health.Visible = false
+                d.dist.Visible = false
+                d.box.Visible = false
+            end
+        end
+    end
+end)
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "Menu"
+gui.ResetOnSpawn = false
+gui.Parent = game.CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 250, 0, 130)
+frame.Position = UDim2.new(0.5, -125, 0.5, -65)
+frame.BackgroundColor3 = Color3.fromRGB(20,20,25)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1,0,0,30)
+title.BackgroundColor3 = Color3.fromRGB(45,45,55)
+title.Text = "Menu"
+title.TextColor3 = Color3.fromRGB(255,255,255)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = frame
+
+local btnParry = Instance.new("TextButton")
+btnParry.Size = UDim2.new(0.45,0,0,35)
+btnParry.Position = UDim2.new(0.03,0,0.35,0)
+btnParry.BackgroundColor3 = Color3.fromRGB(65,65,75)
+btnParry.Text = "Parry: ON"
+btnParry.TextColor3 = Color3.fromRGB(255,255,255)
+btnParry.Font = Enum.Font.GothamBold
+btnParry.TextSize = 13
+btnParry.Parent = frame
+
+local btnESP = Instance.new("TextButton")
+btnESP.Size = UDim2.new(0.45,0,0,35)
+btnESP.Position = UDim2.new(0.52,0,0.35,0)
+btnESP.BackgroundColor3 = Color3.fromRGB(65,65,75)
+btnESP.Text = "ESP: ON"
+btnESP.TextColor3 = Color3.fromRGB(255,255,255)
+btnESP.Font = Enum.Font.GothamBold
+btnESP.TextSize = 13
+btnESP.Parent = frame
+btnParry.MouseButton1Click:Connect(function()
+    parryEnabled = not parryEnabled
+    btnParry.Text = parryEnabled and "Parry: ON" or "Parry: OFF"
+end)
+btnESP.MouseButton1Click:Connect(function()
+    espEnabled = not espEnabled
+    btnESP.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+end)
+
+userInput.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.F1 then
+        espEnabled = not espEnabled
+        btnESP.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+    elseif input.KeyCode == Enum.KeyCode.F2 then
+        parryEnabled = not parryEnabled
+        btnParry.Text = parryEnabled and "Parry: ON" or "Parry: OFF"
+    elseif input.KeyCode == Enum.KeyCode.Insert then
+        gui.Enabled = not gui.Enabled
+    end
+end)
